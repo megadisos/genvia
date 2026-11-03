@@ -130,13 +130,15 @@ fun CreateScreen(vm: MainViewModel) {
             }
         } else {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                val framed = remember(preview, vm.aspect) { vm.framedPreview() ?: preview }
                 Image(
-                    preview.asImageBitmap(), "Imagen de referencia",
-                    Modifier.size(84.dp).clip(RoundedCornerShape(10.dp)), contentScale = ContentScale.Crop
+                    framed.asImageBitmap(), "Imagen de referencia",
+                    Modifier.height(110.dp).aspectRatio(framed.width.toFloat() / framed.height).clip(RoundedCornerShape(8.dp)),
+                    contentScale = ContentScale.Fit
                 )
                 Column(Modifier.weight(1f)) {
                     Text("Imagen de referencia", fontWeight = FontWeight.SemiBold)
-                    Text("Se usa como primer cuadro del video.", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                    Text("Así la recibe la IA: completa y centrada, como primer cuadro del video.", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
                     if (!vm.model.imageOk) Text("${vm.model.name} no acepta imagen.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
                 }
                 IconButton(onClick = vm::clearImage, enabled = !vm.busy) { Icon(Icons.Default.Close, "Quitar imagen") }

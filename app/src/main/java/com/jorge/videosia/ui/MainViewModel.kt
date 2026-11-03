@@ -3,7 +3,6 @@ package com.jorge.videosia.ui
 import android.app.Application
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
-import java.io.ByteArrayOutputStream
 import android.net.Uri
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
@@ -14,6 +13,7 @@ import androidx.lifecycle.viewModelScope
 import com.jorge.videosia.data.Catalog
 import com.jorge.videosia.data.Currency
 import com.jorge.videosia.data.Gallery
+import com.jorge.videosia.data.ImageFrame
 import com.jorge.videosia.data.SavedVideo
 import com.jorge.videosia.data.Money
 import com.jorge.videosia.data.Provider
@@ -90,17 +90,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 val src = cr.openInputStream(uri)!!.use { BitmapFactory.decodeStream(it) }!!
                 val scale = minOf(1f, 1280f / maxOf(src.width, src.height))
                 val bmp = if (scale < 1f) Bitmap.createScaledBitmap(src, (src.width * scale).toInt(), (src.height * scale).toInt(), true) else src
-                val bytes = ByteArrayOutputStream().also { bmp.compress(Bitmap.CompressFormat.JPEG, 88, it) }.toByteArray()
-                imageJpeg = bytes; imagePreview = bmp
-                // Ajusta el formato a la forma de la imagen.
-                aspect = when {
-                    bmp.height > bmp.width * 1.2 -> "9:16"
-                    bmp.width > bmp.height * 1.2 -> "16:9"
-                    else -> "1:1"
-                }.let { if (it in model.aspects) it else aspect }
+                imagePreview = bmp
+                imageJpeg = ImageFrame.toJpeg(bmp) // marca que hay imagen; se enmarca al generar
             }.onFailure { error = "No se pudo abrir la imagen." }
         }
     }
+
+    /** La imagen tal como la recibe la IA: completa y centrada en la forma del video. */
+    fun framedPreview(): Bitmap? = imagePreview?.let { ImageFrame.fit(it, aspect) }
 
     fun clearImage() { imageJpeg = null; imagePreview = null }
 
@@ -131,7 +128,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun generate() {
         if (prompt.isBlank()) { error = "Escribe qué video quieres."; return }
-        val m = model; val secs = seconds; val img = imageJpeg
+        val m = model; val secs = seconds
+        val img = imagePreview?.let { ImageFrame.toJpeg(ImageFrame.fit(it, aspect)) }
         if (img != null && !m.imageOk) { error = "${m.name} no acepta imagen de referencia. Elige otro modelo o quita la imagen."; return }
         error = null; saved = null; lastInfo = null; busy = true
         job = viewModelScope.launch {
