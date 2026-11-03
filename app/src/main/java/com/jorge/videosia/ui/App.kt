@@ -19,6 +19,9 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.VideoLibrary
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -43,7 +46,7 @@ import com.jorge.videosia.data.Currency
 import com.jorge.videosia.data.Gallery
 import com.jorge.videosia.data.Provider
 import com.jorge.videosia.data.VideoModel
-import java.io.File
+import com.jorge.videosia.data.SavedVideo
 import java.text.DateFormat
 import java.util.Date
 import java.util.Locale
@@ -60,12 +63,17 @@ fun App(vm: MainViewModel = viewModel()) {
             bottomBar = {
                 NavigationBar {
                     NavigationBarItem(tab == 0, { tab = 0 }, { Icon(Icons.Default.Movie, null) }, label = { Text("Crear") })
-                    NavigationBarItem(tab == 1, { tab = 1 }, { Icon(Icons.Default.Settings, null) }, label = { Text("Ajustes") })
+                    NavigationBarItem(tab == 1, { tab = 1; vm.refreshLibrary() }, { Icon(Icons.Default.VideoLibrary, null) }, label = { Text("Mis videos") })
+                    NavigationBarItem(tab == 2, { tab = 2 }, { Icon(Icons.Default.Settings, null) }, label = { Text("Ajustes") })
                 }
             }
         ) { pad ->
             Box(Modifier.padding(pad).fillMaxSize()) {
-                if (tab == 0) CreateScreen(vm) else SettingsScreen(vm)
+                when (tab) {
+                    0 -> CreateScreen(vm)
+                    1 -> LibraryScreen(vm)
+                    else -> SettingsScreen(vm)
+                }
             }
         }
     }
@@ -173,12 +181,11 @@ fun CreateScreen(vm: MainViewModel) {
         vm.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
         vm.lastInfo?.let { Text(it, fontWeight = FontWeight.SemiBold) }
 
-        vm.resultFile?.let { file ->
-            VideoPlayer(file)
-            vm.galleryUri?.let { uri ->
-                Button(onClick = { Gallery.share(ctx, uri) }, modifier = Modifier.fillMaxWidth()) {
-                    Icon(Icons.Default.Share, null); Spacer(Modifier.width(8.dp)); Text("Compartir en redes")
-                }
+        vm.saved?.let { v ->
+            VideoPlayer(v.uri)
+            Text("Ruta: ${v.path}", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+            Button(onClick = { Gallery.share(ctx, v.uri) }, modifier = Modifier.fillMaxWidth()) {
+                Icon(Icons.Default.Share, null); Spacer(Modifier.width(8.dp)); Text("Compartir en redes")
             }
         }
         Spacer(Modifier.height(24.dp))
@@ -255,11 +262,11 @@ private fun InfoCard(vm: MainViewModel) {
 }
 
 @Composable
-private fun VideoPlayer(file: File) {
+private fun VideoPlayer(uri: Uri) {
     val ctx = LocalContext.current
-    val player = remember(file) {
+    val player = remember(uri) {
         ExoPlayer.Builder(ctx).build().apply {
-            setMediaItem(MediaItem.fromUri(Uri.fromFile(file)))
+            setMediaItem(MediaItem.fromUri(uri))
             repeatMode = Player.REPEAT_MODE_ONE
             prepare(); playWhenReady = true
         }
@@ -322,5 +329,62 @@ fun SettingsScreen(vm: MainViewModel) {
         Text("Videos hoy: ${st.today} · este mes: ${st.month}")
         Text("Gastado este mes: ${money.fmt(st.spentMonthUsd)} · total: ${money.fmt(st.spentTotalUsd)}")
         OutlinedButton(onClick = vm::resetTotal) { Text("Reiniciar total") }
+    }
+}
+
+@Composable
+fun LibraryScreen(vm: MainViewModel) {
+    val ctx = LocalContext.current
+    var playing by remember { mutableStateOf<Uri?>(null) }
+    var toDelete by remember { mutableStateOf<SavedVideo?>(null) }
+    val groups = vm.library.groupBy { it.folder }.toSortedMap(String.CASE_INSENSITIVE_ORDER)
+
+    Column(
+        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        Text("Mis videos", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+        Text(
+            "Se guardan en la galería, en una carpeta por IA: Movies/GenVia/<nombre de la IA>",
+            style = MaterialTheme.typography.bodySmall, color = Color.Gray
+        )
+        if (groups.isEmpty()) Text("Todavía no has generado videos.", color = Color.Gray)
+
+        playing?.let { VideoPlayer(it) }
+
+        groups.forEach { (folder, videos) ->
+            Spacer(Modifier.height(6.dp))
+            Text("$folder · ${videos.size} video${if (videos.size == 1) "" else "s"}", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            Text(videos.first().path.substringBeforeLast('/'), style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+            videos.forEach { v ->
+                OutlinedCard(Modifier.fillMaxWidth()) {
+                    Row(Modifier.padding(start = 12.dp, top = 6.dp, bottom = 6.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text(v.name, style = MaterialTheme.typography.bodyMedium)
+                            Text(
+                                DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(Date(v.dateMs)) +
+                                    " · " + String.format(Locale.US, "%.1f MB", v.sizeBytes / 1_048_576.0),
+                                style = MaterialTheme.typography.bodySmall, color = Color.Gray
+                            )
+                        }
+                        IconButton(onClick = { playing = v.uri }) { Icon(Icons.Default.PlayArrow, "Ver") }
+                        IconButton(onClick = { Gallery.share(ctx, v.uri) }) { Icon(Icons.Default.Share, "Compartir") }
+                        IconButton(onClick = { toDelete = v }) { Icon(Icons.Default.Delete, "Borrar") }
+                    }
+                }
+            }
+        }
+    }
+
+    toDelete?.let { v ->
+        AlertDialog(
+            onDismissRequest = { toDelete = null },
+            title = { Text("¿Borrar video?") },
+            text = { Text("Se borrará ${v.name} de ${v.folder}. No se puede deshacer.") },
+            confirmButton = {
+                TextButton(onClick = { if (playing == v.uri) playing = null; vm.deleteVideo(v); toDelete = null }) { Text("Borrar") }
+            },
+            dismissButton = { TextButton(onClick = { toDelete = null }) { Text("Cancelar") } }
+        )
     }
 }

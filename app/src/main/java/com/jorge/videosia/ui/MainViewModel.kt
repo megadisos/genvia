@@ -14,6 +14,7 @@ import androidx.lifecycle.viewModelScope
 import com.jorge.videosia.data.Catalog
 import com.jorge.videosia.data.Currency
 import com.jorge.videosia.data.Gallery
+import com.jorge.videosia.data.SavedVideo
 import com.jorge.videosia.data.Money
 import com.jorge.videosia.data.Provider
 import com.jorge.videosia.data.Settings
@@ -49,8 +50,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     var busy by mutableStateOf(false)
     var status by mutableStateOf("")
     var error by mutableStateOf<String?>(null)
-    var resultFile by mutableStateOf<File?>(null)
-    var galleryUri by mutableStateOf<Uri?>(null)
+    /** Último video generado (ya guardado en su carpeta por IA). */
+    var saved by mutableStateOf<SavedVideo?>(null)
+    /** Todos los videos guardados, para la pestaña "Mis videos". */
+    var library by mutableStateOf<List<SavedVideo>>(emptyList())
     var lastInfo by mutableStateOf<String?>(null)
 
     data class Stats(val today: Int, val month: Int, val spentMonthUsd: Double, val spentTotalUsd: Double)
@@ -60,6 +63,17 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         pick(model)
         refreshRate()
         refreshBalances()
+        refreshLibrary()
+    }
+
+    fun refreshLibrary() = viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+        library = Gallery.list(getApplication())
+    }
+
+    fun deleteVideo(v: SavedVideo) = viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+        Gallery.delete(getApplication(), v)
+        if (saved?.uri == v.uri) saved = null
+        library = Gallery.list(getApplication())
     }
 
     fun pick(m: VideoModel) {
@@ -119,18 +133,27 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         if (prompt.isBlank()) { error = "Escribe qué video quieres."; return }
         val m = model; val secs = seconds; val img = imageJpeg
         if (img != null && !m.imageOk) { error = "${m.name} no acepta imagen de referencia. Elige otro modelo o quita la imagen."; return }
-        error = null; resultFile = null; galleryUri = null; lastInfo = null; busy = true
+        error = null; saved = null; lastInfo = null; busy = true
         job = viewModelScope.launch {
             val key = settings.key(m.provider)
             val before = client.balanceUsd(m.provider, key)
             val start = System.currentTimeMillis()
             try {
                 val dir = File(getApplication<Application>().filesDir, "videos").apply { mkdirs() }
-                val out = File(dir, "genvia_${System.currentTimeMillis()}.mp4")
+                val stamp = java.text.SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.US).format(java.util.Date())
+                val out = File(dir, "genvia_$stamp.mp4")
                 val file = client.generate(GenerationRequest(m, prompt.trim(), secs, aspect, img), key, out) { status = it }
                 val took = (System.currentTimeMillis() - start) / 1000
-                resultFile = file
-                galleryUri = runCatching { Gallery.saveToGallery(getApplication(), file) }.getOrNull()
+                val sv = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    runCatching { Gallery.save(getApplication(), file, Gallery.folderFor(m)) }.getOrNull()
+                }
+                if (sv != null) {
+                    file.delete() // ya está en su carpeta; no se duplica el espacio
+                    saved = sv
+                } else {
+                    saved = SavedVideo(Uri.fromFile(file), file.name, Gallery.folderFor(m), file.absolutePath, file.length(), System.currentTimeMillis())
+                }
+                refreshLibrary()
 
                 val after = client.balanceUsd(m.provider, key)
                 val real = if (before != null && after != null && before - after > 0) before - after else null
@@ -143,7 +166,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 refreshBalances()
                 lastInfo = "Video de ${secs}s · tardó ${took}s en generarse · costó " +
                     (if (real != null) money.fmt(cost) else "~" + money.fmt(cost) + " (estimado)")
-                status = "¡Listo! Guardado en Galería › Movies/GenVia"
+                status = "¡Listo! Guardado en: ${saved?.path}"
             } catch (e: Exception) {
                 error = e.message ?: e.toString()
                 status = ""
