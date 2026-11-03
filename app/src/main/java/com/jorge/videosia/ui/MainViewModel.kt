@@ -3,7 +3,6 @@ package com.jorge.videosia.ui
 import android.app.Application
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
-import java.io.ByteArrayOutputStream
 import android.net.Uri
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
@@ -14,10 +13,13 @@ import androidx.lifecycle.viewModelScope
 import com.jorge.videosia.data.Catalog
 import com.jorge.videosia.data.Currency
 import com.jorge.videosia.data.Gallery
+import com.jorge.videosia.data.ImageFrame
+import com.jorge.videosia.data.SavedVideo
 import com.jorge.videosia.data.Money
 import com.jorge.videosia.data.Provider
 import com.jorge.videosia.data.Settings
 import com.jorge.videosia.data.VideoModel
+import com.jorge.videosia.net.BalanceInfo
 import com.jorge.videosia.net.GenerationRequest
 import com.jorge.videosia.net.VideoClient
 import kotlinx.coroutines.Job
@@ -43,14 +45,16 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     val money get() = Money(currency, copPerUsd)
 
     /** Saldo leído de cada proveedor (USD). Ausente = desconocido. */
-    val balances = mutableStateMapOf<Provider, Double>()
+    val balances = mutableStateMapOf<Provider, BalanceInfo>()
     var stats by mutableStateOf(readStats())
 
     var busy by mutableStateOf(false)
     var status by mutableStateOf("")
     var error by mutableStateOf<String?>(null)
-    var resultFile by mutableStateOf<File?>(null)
-    var galleryUri by mutableStateOf<Uri?>(null)
+    /** Último video generado (ya guardado en su carpeta por IA). */
+    var saved by mutableStateOf<SavedVideo?>(null)
+    /** Todos los videos guardados, para la pestaña "Mis videos". */
+    var library by mutableStateOf<List<SavedVideo>>(emptyList())
     var lastInfo by mutableStateOf<String?>(null)
 
     data class Stats(val today: Int, val month: Int, val spentMonthUsd: Double, val spentTotalUsd: Double)
@@ -60,6 +64,17 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         pick(model)
         refreshRate()
         refreshBalances()
+        refreshLibrary()
+    }
+
+    fun refreshLibrary() = viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+        library = Gallery.list(getApplication())
+    }
+
+    fun deleteVideo(v: SavedVideo) = viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+        Gallery.delete(getApplication(), v)
+        if (saved?.uri == v.uri) saved = null
+        library = Gallery.list(getApplication())
     }
 
     fun pick(m: VideoModel) {
@@ -76,17 +91,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 val src = cr.openInputStream(uri)!!.use { BitmapFactory.decodeStream(it) }!!
                 val scale = minOf(1f, 1280f / maxOf(src.width, src.height))
                 val bmp = if (scale < 1f) Bitmap.createScaledBitmap(src, (src.width * scale).toInt(), (src.height * scale).toInt(), true) else src
-                val bytes = ByteArrayOutputStream().also { bmp.compress(Bitmap.CompressFormat.JPEG, 88, it) }.toByteArray()
-                imageJpeg = bytes; imagePreview = bmp
-                // Ajusta el formato a la forma de la imagen.
-                aspect = when {
-                    bmp.height > bmp.width * 1.2 -> "9:16"
-                    bmp.width > bmp.height * 1.2 -> "16:9"
-                    else -> "1:1"
-                }.let { if (it in model.aspects) it else aspect }
+                imagePreview = bmp
+                imageJpeg = ImageFrame.toJpeg(bmp) // marca que hay imagen; se enmarca al generar
             }.onFailure { error = "No se pudo abrir la imagen." }
         }
     }
+
+    /** La imagen tal como la recibe la IA: completa y centrada en la forma del video. */
+    fun framedPreview(): Bitmap? = imagePreview?.let { ImageFrame.fit(it, aspect) }
 
     fun clearImage() { imageJpeg = null; imagePreview = null }
 
@@ -98,39 +110,53 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun refreshBalances() = viewModelScope.launch {
         Provider.entries.forEach { p ->
-            val live = client.balanceUsd(p, settings.key(p))
+            val live = client.balanceInfo(p, settings.key(p))
             val manual = settings.manualBalance(p)
-            when {
-                live != null -> balances[p] = live
-                manual >= 0 -> balances[p] = manual
-                else -> balances.remove(p)
-            }
+            balances[p] = if (live.total == null && manual >= 0)
+                BalanceInfo(total = manual, paid = manual, manual = true, error = live.error) else live
         }
+    }
+
+    /** Saldo que puede usar este modelo: los "solo de pago" no aceptan el Pollen de misiones. */
+    fun usableUsd(m: VideoModel): Double? {
+        val b = balances[m.provider] ?: return null
+        if (m.freePollenOk || b.paid == null) return b.total
+        return b.paid
     }
 
     /** Cuántos videos de este modelo y duración alcanzan con el saldo conocido. */
     fun videosLeft(m: VideoModel, secs: Int): Int? {
-        val bal = balances[m.provider] ?: return null
+        val bal = usableUsd(m) ?: return null
         val cost = m.estimateUsd(secs)
         return if (cost <= 0) null else (bal / cost).toInt()
     }
 
     fun generate() {
         if (prompt.isBlank()) { error = "Escribe qué video quieres."; return }
-        val m = model; val secs = seconds; val img = imageJpeg
+        val m = model; val secs = seconds
+        val img = imagePreview?.let { ImageFrame.toJpeg(ImageFrame.fit(it, aspect)) }
         if (img != null && !m.imageOk) { error = "${m.name} no acepta imagen de referencia. Elige otro modelo o quita la imagen."; return }
-        error = null; resultFile = null; galleryUri = null; lastInfo = null; busy = true
+        error = null; saved = null; lastInfo = null; busy = true
         job = viewModelScope.launch {
             val key = settings.key(m.provider)
             val before = client.balanceUsd(m.provider, key)
             val start = System.currentTimeMillis()
             try {
                 val dir = File(getApplication<Application>().filesDir, "videos").apply { mkdirs() }
-                val out = File(dir, "genvia_${System.currentTimeMillis()}.mp4")
+                val stamp = java.text.SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.US).format(java.util.Date())
+                val out = File(dir, "genvia_$stamp.mp4")
                 val file = client.generate(GenerationRequest(m, prompt.trim(), secs, aspect, img), key, out) { status = it }
                 val took = (System.currentTimeMillis() - start) / 1000
-                resultFile = file
-                galleryUri = runCatching { Gallery.saveToGallery(getApplication(), file) }.getOrNull()
+                val sv = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    runCatching { Gallery.save(getApplication(), file, Gallery.folderFor(m)) }.getOrNull()
+                }
+                if (sv != null) {
+                    file.delete() // ya está en su carpeta; no se duplica el espacio
+                    saved = sv
+                } else {
+                    saved = SavedVideo(Uri.fromFile(file), file.name, Gallery.folderFor(m), file.absolutePath, file.length(), System.currentTimeMillis())
+                }
+                refreshLibrary()
 
                 val after = client.balanceUsd(m.provider, key)
                 val real = if (before != null && after != null && before - after > 0) before - after else null
@@ -143,7 +169,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 refreshBalances()
                 lastInfo = "Video de ${secs}s · tardó ${took}s en generarse · costó " +
                     (if (real != null) money.fmt(cost) else "~" + money.fmt(cost) + " (estimado)")
-                status = "¡Listo! Guardado en Galería › Movies/GenVia"
+                status = "¡Listo! Guardado en: ${saved?.path}"
             } catch (e: Exception) {
                 error = e.message ?: e.toString()
                 status = ""

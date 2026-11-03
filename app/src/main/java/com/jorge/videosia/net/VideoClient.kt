@@ -19,6 +19,26 @@ import java.util.concurrent.TimeUnit
 
 class ApiException(message: String) : Exception(message)
 
+private const val CONTENT_POLICY =
+    "El filtro de contenido rechazó el prompt o la imagen. Suele pasar con violencia, armas o fotos de personas " +
+        "reales en escenas de pelea. Suaviza el prompt (por ejemplo, juego o aventura sin golpes) o prueba otro modelo. " +
+        "Los videos rechazados normalmente no se cobran."
+
+/** Saldo en USD (1 Pollen ≈ 1 USD). */
+data class BalanceInfo(
+    val total: Double? = null,
+    /** Saldo comprado: sirve para todos los modelos. */
+    val paid: Double? = null,
+    /** Pollen gratis de misiones: solo para modelos que no son "solo de pago". */
+    val quest: Double? = null,
+    val questLocked: Boolean = false,
+    /** La clave tiene presupuesto propio y solo muestra lo que le queda. */
+    val keyBudget: Boolean = false,
+    /** Escrito a mano en Ajustes. */
+    val manual: Boolean = false,
+    val error: String? = null,
+)
+
 data class GenerationRequest(
     val model: VideoModel,
     val prompt: String,
@@ -47,23 +67,50 @@ class VideoClient {
 
     // ---------------- Saldo ----------------
 
-    /** Saldo en USD, o null si la clave no permite leerlo. */
-    suspend fun balanceUsd(p: Provider, apiKey: String): Double? = withContext(Dispatchers.IO) {
-        if (apiKey.isBlank()) return@withContext null
+    /** Saldo en USD (total), o null si la clave no permite leerlo. */
+    suspend fun balanceUsd(p: Provider, apiKey: String): Double? = balanceInfo(p, apiKey).total
+
+    /**
+     * Saldo detallado. En Pollinations: pagado, de misiones (gratis) y total, como en su página.
+     * Si no se puede leer, total es null y error explica por qué.
+     */
+    suspend fun balanceInfo(p: Provider, apiKey: String): BalanceInfo = withContext(Dispatchers.IO) {
+        if (apiKey.isBlank()) return@withContext BalanceInfo(error = "Falta la clave")
         runCatching {
             when (p) {
                 Provider.POLLINATIONS -> {
                     val r = get("https://gen.pollinations.ai/account/balance", "Bearer $apiKey")
-                    if (!r.ok) null else JSONObject(r.body).optDouble("balance").takeIf { !it.isNaN() } // 1 Pollen ≈ 1 USD
+                    if (!r.ok) {
+                        BalanceInfo(error = if (r.code == 403) "La clave no tiene el permiso account:usage" else "Error ${r.code}")
+                    } else {
+                        val o = JSONObject(r.body)
+                        val acc = o.optJSONObject("accountBalance")
+                        if (acc != null) {
+                            BalanceInfo(
+                                total = acc.optDouble("total").orNull() ?: o.optDouble("balance").orNull(),
+                                paid = acc.optDouble("paid").orNull(),
+                                quest = acc.optDouble("tier").orNull(),
+                                questLocked = acc.optBoolean("questPollenRestricted", false),
+                            )
+                        } else {
+                            // Clave con presupuesto: solo informa lo que le queda a esa clave.
+                            BalanceInfo(total = o.optDouble("balance").orNull(), keyBudget = true)
+                        }
+                    }
                 }
                 Provider.FAL -> {
                     val r = get("https://api.fal.ai/v1/account/billing?expand=credits", "Key $apiKey")
-                    if (!r.ok) null else JSONObject(r.body).optJSONObject("credits")?.optDouble("current_balance")
-                        ?.takeIf { !it.isNaN() }
+                    if (!r.ok) BalanceInfo(error = if (r.code == 403) "La clave no tiene permiso de facturación" else "Error ${r.code}")
+                    else {
+                        val v = JSONObject(r.body).optJSONObject("credits")?.optDouble("current_balance")?.orNull()
+                        BalanceInfo(total = v, paid = v, quest = 0.0)
+                    }
                 }
             }
-        }.getOrNull()
+        }.getOrElse { BalanceInfo(error = "Sin conexión") }
     }
+
+    private fun Double.orNull(): Double? = if (isNaN()) null else this
 
     /** Pesos colombianos por dólar, de una API pública gratuita. */
     suspend fun copPerUsd(): Double? = withContext(Dispatchers.IO) {
@@ -114,8 +161,10 @@ class VideoClient {
                 val o = JSONObject(st.body)
                 when (o.optString("status")) {
                     "succeeded" -> break
-                    "failed", "error", "cancelled" ->
-                        throw ApiException("Falló: " + (o.optJSONObject("error")?.optString("message") ?: o.optString("error", st.body.take(300))))
+                    "failed", "error", "cancelled" -> {
+                        val msg = o.optJSONObject("error")?.optString("message") ?: o.optString("error", st.body)
+                        throw ApiException(if (isContentPolicy(msg)) CONTENT_POLICY else "Falló: ${msg.take(300)}")
+                    }
                     else -> onStatus("Generando video… (${waited}s)")
                 }
                 if (waited > 20 * 60) throw ApiException("Tardó más de 20 minutos. Inténtalo de nuevo.")
@@ -209,7 +258,10 @@ class VideoClient {
         }
     }
 
-    private fun friendlyError(code: Int, body: String): String = when (code) {
+    private fun isContentPolicy(text: String) =
+        text.contains("content_policy", true) || text.contains("flagged", true) || text.contains("moderation", true)
+
+    private fun friendlyError(code: Int, body: String): String = if (isContentPolicy(body)) CONTENT_POLICY else when (code) {
         401, 403 -> "Clave inválida o sin permisos ($code). ${body.take(200)}"
         402 -> "Sin saldo suficiente ($code). Recarga en el proveedor."
         404 -> "El modelo no existe o cambió de nombre ($code)."

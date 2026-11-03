@@ -19,6 +19,9 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.VideoLibrary
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -43,7 +46,7 @@ import com.jorge.videosia.data.Currency
 import com.jorge.videosia.data.Gallery
 import com.jorge.videosia.data.Provider
 import com.jorge.videosia.data.VideoModel
-import java.io.File
+import com.jorge.videosia.data.SavedVideo
 import java.text.DateFormat
 import java.util.Date
 import java.util.Locale
@@ -60,12 +63,17 @@ fun App(vm: MainViewModel = viewModel()) {
             bottomBar = {
                 NavigationBar {
                     NavigationBarItem(tab == 0, { tab = 0 }, { Icon(Icons.Default.Movie, null) }, label = { Text("Crear") })
-                    NavigationBarItem(tab == 1, { tab = 1 }, { Icon(Icons.Default.Settings, null) }, label = { Text("Ajustes") })
+                    NavigationBarItem(tab == 1, { tab = 1; vm.refreshLibrary() }, { Icon(Icons.Default.VideoLibrary, null) }, label = { Text("Mis videos") })
+                    NavigationBarItem(tab == 2, { tab = 2 }, { Icon(Icons.Default.Settings, null) }, label = { Text("Ajustes") })
                 }
             }
         ) { pad ->
             Box(Modifier.padding(pad).fillMaxSize()) {
-                if (tab == 0) CreateScreen(vm) else SettingsScreen(vm)
+                when (tab) {
+                    0 -> CreateScreen(vm)
+                    1 -> LibraryScreen(vm)
+                    else -> SettingsScreen(vm)
+                }
             }
         }
     }
@@ -122,13 +130,15 @@ fun CreateScreen(vm: MainViewModel) {
             }
         } else {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                val framed = remember(preview, vm.aspect) { vm.framedPreview() ?: preview }
                 Image(
-                    preview.asImageBitmap(), "Imagen de referencia",
-                    Modifier.size(84.dp).clip(RoundedCornerShape(10.dp)), contentScale = ContentScale.Crop
+                    framed.asImageBitmap(), "Imagen de referencia",
+                    Modifier.height(110.dp).aspectRatio(framed.width.toFloat() / framed.height).clip(RoundedCornerShape(8.dp)),
+                    contentScale = ContentScale.Fit
                 )
                 Column(Modifier.weight(1f)) {
                     Text("Imagen de referencia", fontWeight = FontWeight.SemiBold)
-                    Text("Se usa como primer cuadro del video.", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                    Text("Así la recibe la IA: completa y centrada, como primer cuadro del video.", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
                     if (!vm.model.imageOk) Text("${vm.model.name} no acepta imagen.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
                 }
                 IconButton(onClick = vm::clearImage, enabled = !vm.busy) { Icon(Icons.Default.Close, "Quitar imagen") }
@@ -143,12 +153,23 @@ fun CreateScreen(vm: MainViewModel) {
 
         Text("Modelo de IA", fontWeight = FontWeight.SemiBold)
         val needImage = vm.imageJpeg != null
-        val pol = Catalog.models.filter { it.provider == Provider.POLLINATIONS }
-        val fal = Catalog.models.filter { it.provider == Provider.FAL }
-        ModelGroup("Pollinations · chinas", pol.filter { it.country == "China" }, vm, needImage)
-        ModelGroup("Pollinations · otras", pol.filter { it.country != "China" }, vm, needImage)
-        ModelGroup("fal.ai · chinas", fal.filter { it.country == "China" }, vm, needImage)
-        ModelGroup("fal.ai · otras", fal.filter { it.country != "China" }, vm, needImage)
+        var order by remember { mutableIntStateOf(0) }
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf("Mejor a peor", "Por uso", "Por proveedor", "Más barato").forEachIndexed { i, l ->
+                FilterChip(order == i, { order = i }, label = { Text(l) })
+            }
+        }
+        val all = Catalog.models
+        when (order) {
+            0 -> ModelGroup("De mejor a peor calidad", all.sortedWith(compareBy({ it.rank }, { it.usdPerSecond })), vm, needImage)
+            1 -> com.jorge.videosia.data.UseCase.entries.forEach { u ->
+                ModelGroup(u.label, all.filter { it.useCase == u }.sortedBy { it.rank }, vm, needImage)
+            }
+            2 -> Provider.entries.forEach { p ->
+                ModelGroup(p.label, all.filter { it.provider == p }.sortedBy { it.rank }, vm, needImage)
+            }
+            else -> ModelGroup("Del más barato al más caro (por segundo)", all.sortedBy { it.usdPerSecond }, vm, needImage)
+        }
 
         if (vm.model.durations.size > 1) {
             Text("Duración del video", fontWeight = FontWeight.SemiBold)
@@ -173,12 +194,11 @@ fun CreateScreen(vm: MainViewModel) {
         vm.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
         vm.lastInfo?.let { Text(it, fontWeight = FontWeight.SemiBold) }
 
-        vm.resultFile?.let { file ->
-            VideoPlayer(file)
-            vm.galleryUri?.let { uri ->
-                Button(onClick = { Gallery.share(ctx, uri) }, modifier = Modifier.fillMaxWidth()) {
-                    Icon(Icons.Default.Share, null); Spacer(Modifier.width(8.dp)); Text("Compartir en redes")
-                }
+        vm.saved?.let { v ->
+            VideoPlayer(v.uri)
+            Text("Ruta: ${v.path}", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+            Button(onClick = { Gallery.share(ctx, v.uri) }, modifier = Modifier.fillMaxWidth()) {
+                Icon(Icons.Default.Share, null); Spacer(Modifier.width(8.dp)); Text("Compartir en redes")
             }
         }
         Spacer(Modifier.height(24.dp))
@@ -201,8 +221,8 @@ private fun ModelGroup(title: String, models: List<VideoModel>, vm: MainViewMode
             Column(Modifier.padding(12.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
-                        Text(m.name, fontWeight = FontWeight.SemiBold, color = if (dim) Color.Gray else Color.Unspecified)
-                        Text("${m.company} · ${m.country} · ${m.quality}", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                        Text("#${m.rank} ${m.name}", fontWeight = FontWeight.SemiBold, color = if (dim) Color.Gray else Color.Unspecified)
+                        Text("${m.company} · ${m.country} · ${m.provider.label} · ${m.quality}", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
                     }
                     Column(horizontalAlignment = Alignment.End) {
                         Text(money.fmt(m.usdPerSecond), color = Gold, fontWeight = FontWeight.Bold)
@@ -210,6 +230,7 @@ private fun ModelGroup(title: String, models: List<VideoModel>, vm: MainViewMode
                     }
                 }
                 Spacer(Modifier.height(4.dp))
+                if (m.bestFor.isNotBlank()) Text("Ideal para: ${m.bestFor}", style = MaterialTheme.typography.bodySmall, color = Gold)
                 Text(
                     "Duración: ${m.durationText} · 1 video por generación · video de ${refSecs}s ≈ ${money.fmt(m.estimateUsd(refSecs))}",
                     style = MaterialTheme.typography.bodySmall
@@ -240,7 +261,8 @@ private fun InfoCard(vm: MainViewModel) {
         Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text("${m.name} en ${m.provider.label}", fontWeight = FontWeight.Bold)
             Text("Costo estimado: ${money.fmt(m.estimateUsd(vm.seconds))} (${money.fmt(m.usdPerSecond)}/s × ${vm.seconds}s)")
-            Text("Saldo disponible: " + (bal?.let { money.fmt(it) } ?: "desconocido"))
+            BalanceLines(bal, money)
+            vm.usableUsd(m)?.let { if (!m.freePollenOk && bal?.quest != null) Text("Este modelo solo usa saldo pagado: ${money.fmt(it)}", style = MaterialTheme.typography.bodySmall) }
             Text("Videos disponibles con ese saldo: " + (left?.toString() ?: "—"))
             Text("Hechos hoy: ${st.today} · este mes: ${st.month} · gastado este mes: ${money.fmt(st.spentMonthUsd)}")
             Text(m.provider.freeInfo, style = MaterialTheme.typography.bodySmall, color = Color.Gray)
@@ -255,17 +277,23 @@ private fun InfoCard(vm: MainViewModel) {
 }
 
 @Composable
-private fun VideoPlayer(file: File) {
+private fun VideoPlayer(uri: Uri, modifier: Modifier = Modifier.fillMaxWidth().aspectRatio(9f / 16f)) {
     val ctx = LocalContext.current
-    val player = remember(file) {
+    val player = remember(uri) {
         ExoPlayer.Builder(ctx).build().apply {
-            setMediaItem(MediaItem.fromUri(Uri.fromFile(file)))
+            setMediaItem(MediaItem.fromUri(uri))
             repeatMode = Player.REPEAT_MODE_ONE
             prepare(); playWhenReady = true
         }
     }
     DisposableEffect(player) { onDispose { player.release() } }
-    AndroidView(factory = { PlayerView(it).apply { this.player = player } }, modifier = Modifier.fillMaxWidth().aspectRatio(9f / 16f))
+    // update = cada vez que cambia el video, la vista se conecta al reproductor nuevo
+    // (antes se quedaba con el primero, ya liberado, y se veía mal).
+    AndroidView(
+        factory = { PlayerView(it) },
+        update = { it.player = player },
+        modifier = modifier
+    )
 }
 
 @Composable
@@ -302,7 +330,7 @@ fun SettingsScreen(vm: MainViewModel) {
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
                 singleLine = true, modifier = Modifier.fillMaxWidth()
             )
-            Text("Saldo: " + (vm.balances[p]?.let { money.fmt(it) } ?: "no se pudo leer"), style = MaterialTheme.typography.bodySmall)
+            BalanceLines(vm.balances[p], money)
             OutlinedTextField(
                 value = bal,
                 onValueChange = { v -> bal = v; v.replace(",", ".").toDoubleOrNull()?.let { vm.settings.setManualBalance(p, it) } },
@@ -317,10 +345,121 @@ fun SettingsScreen(vm: MainViewModel) {
             HorizontalDivider()
         }
 
+        val version = remember {
+            runCatching { ctx.packageManager.getPackageInfo(ctx.packageName, 0).versionName }.getOrNull() ?: "?"
+        }
+        Text("Versión de la app: $version", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+        HorizontalDivider()
+
         val st = vm.stats
         Text("Tu uso", fontWeight = FontWeight.SemiBold)
         Text("Videos hoy: ${st.today} · este mes: ${st.month}")
         Text("Gastado este mes: ${money.fmt(st.spentMonthUsd)} · total: ${money.fmt(st.spentTotalUsd)}")
         OutlinedButton(onClick = vm::resetTotal) { Text("Reiniciar total") }
+    }
+}
+
+@Composable
+fun LibraryScreen(vm: MainViewModel) {
+    val ctx = LocalContext.current
+    // Pide permiso para leer videos: así aparecen también los de versiones anteriores de la app.
+    val readPerm = if (android.os.Build.VERSION.SDK_INT >= 33) android.Manifest.permission.READ_MEDIA_VIDEO
+        else android.Manifest.permission.READ_EXTERNAL_STORAGE
+    val permLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { vm.refreshLibrary() }
+    LaunchedEffect(Unit) {
+        if (android.os.Build.VERSION.SDK_INT >= 29 &&
+            androidx.core.content.ContextCompat.checkSelfPermission(ctx, readPerm) != android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) permLauncher.launch(readPerm)
+    }
+    var playing by remember { mutableStateOf<SavedVideo?>(null) }
+    var toDelete by remember { mutableStateOf<SavedVideo?>(null) }
+    val groups = vm.library.groupBy { it.folder }.toSortedMap(String.CASE_INSENSITIVE_ORDER)
+
+    Column(
+        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        Text("Mis videos", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+        Text(
+            "Se guardan en la galería, en una carpeta por IA: Movies/GenVia/<nombre de la IA>",
+            style = MaterialTheme.typography.bodySmall, color = Color.Gray
+        )
+        if (groups.isEmpty()) Text("Todavía no has generado videos.", color = Color.Gray)
+
+        groups.forEach { (folder, videos) ->
+            Spacer(Modifier.height(6.dp))
+            Text("$folder · ${videos.size} video${if (videos.size == 1) "" else "s"}", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            Text(videos.first().path.substringBeforeLast('/'), style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+            videos.forEach { v ->
+                OutlinedCard(Modifier.fillMaxWidth()) {
+                    Row(Modifier.padding(start = 12.dp, top = 6.dp, bottom = 6.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text(v.name, style = MaterialTheme.typography.bodyMedium)
+                            Text(
+                                DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(Date(v.dateMs)) +
+                                    " · " + String.format(Locale.US, "%.1f MB", v.sizeBytes / 1_048_576.0),
+                                style = MaterialTheme.typography.bodySmall, color = Color.Gray
+                            )
+                        }
+                        IconButton(onClick = { playing = v }) { Icon(Icons.Default.PlayArrow, "Ver") }
+                        IconButton(onClick = { Gallery.share(ctx, v.uri) }) { Icon(Icons.Default.Share, "Compartir") }
+                        IconButton(onClick = { toDelete = v }) { Icon(Icons.Default.Delete, "Borrar") }
+                    }
+                }
+            }
+        }
+    }
+
+    playing?.let { v ->
+        androidx.compose.ui.window.Dialog(
+            onDismissRequest = { playing = null },
+            properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false)
+        ) {
+            Surface(Modifier.fillMaxSize(), color = Color.Black) {
+                Column(Modifier.fillMaxSize()) {
+                    Row(Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f).padding(start = 8.dp)) {
+                            Text(v.folder, color = Color.White, fontWeight = FontWeight.SemiBold)
+                            Text(v.name, color = Color.Gray, style = MaterialTheme.typography.bodySmall)
+                        }
+                        IconButton(onClick = { Gallery.share(ctx, v.uri) }) { Icon(Icons.Default.Share, "Compartir", tint = Color.White) }
+                        IconButton(onClick = { playing = null }) { Icon(Icons.Default.Close, "Cerrar", tint = Color.White) }
+                    }
+                    // key: un reproductor nuevo por cada video
+                    key(v.uri) { VideoPlayer(v.uri, Modifier.fillMaxWidth().weight(1f)) }
+                }
+            }
+        }
+    }
+
+    toDelete?.let { v ->
+        AlertDialog(
+            onDismissRequest = { toDelete = null },
+            title = { Text("¿Borrar video?") },
+            text = { Text("Se borrará ${v.name} de ${v.folder}. No se puede deshacer.") },
+            confirmButton = {
+                TextButton(onClick = { if (playing?.uri == v.uri) playing = null; vm.deleteVideo(v); toDelete = null }) { Text("Borrar") }
+            },
+            dismissButton = { TextButton(onClick = { toDelete = null }) { Text("Cancelar") } }
+        )
+    }
+}
+
+@Composable
+private fun BalanceLines(b: com.jorge.videosia.net.BalanceInfo?, money: com.jorge.videosia.data.Money) {
+    val small = MaterialTheme.typography.bodySmall
+    when {
+        b == null -> Text("Saldo: consultando…", style = small)
+        b.total == null -> Text("Saldo: no se pudo leer (${b.error ?: "sin datos"}). Puedes escribirlo a mano en Ajustes.", style = small, color = Color.Gray)
+        b.paid != null && b.quest != null -> {
+            Text("Saldo total: ${money.fmt(b.total ?: 0.0)}", fontWeight = FontWeight.SemiBold)
+            Text(
+                "Pagado: ${money.fmt(b.paid)} · Misiones (gratis): ${money.fmt(b.quest)}" + if (b.questLocked) " (bloqueado)" else "",
+                style = small
+            )
+        }
+        b.keyBudget -> Text("Saldo de esta clave: ${money.fmt(b.total ?: 0.0)} (para ver pagado y misiones, dale a la clave el permiso account:usage)", style = small)
+        b.manual -> Text("Saldo (escrito a mano): ${money.fmt(b.total ?: 0.0)}", style = small)
+        else -> Text("Saldo: ${money.fmt(b.total ?: 0.0)}", style = small)
     }
 }
