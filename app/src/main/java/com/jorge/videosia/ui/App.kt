@@ -339,6 +339,12 @@ fun SettingsScreen(vm: MainViewModel) {
             HorizontalDivider()
         }
 
+        val version = remember {
+            runCatching { ctx.packageManager.getPackageInfo(ctx.packageName, 0).versionName }.getOrNull() ?: "?"
+        }
+        Text("Versión de la app: $version", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+        HorizontalDivider()
+
         val st = vm.stats
         Text("Tu uso", fontWeight = FontWeight.SemiBold)
         Text("Videos hoy: ${st.today} · este mes: ${st.month}")
