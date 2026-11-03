@@ -249,7 +249,8 @@ private fun InfoCard(vm: MainViewModel) {
         Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Text("${m.name} en ${m.provider.label}", fontWeight = FontWeight.Bold)
             Text("Costo estimado: ${money.fmt(m.estimateUsd(vm.seconds))} (${money.fmt(m.usdPerSecond)}/s × ${vm.seconds}s)")
-            Text("Saldo disponible: " + (bal?.let { money.fmt(it) } ?: "desconocido"))
+            BalanceLines(bal, money)
+            vm.usableUsd(m)?.let { if (!m.freePollenOk && bal?.quest != null) Text("Este modelo solo usa saldo pagado: ${money.fmt(it)}", style = MaterialTheme.typography.bodySmall) }
             Text("Videos disponibles con ese saldo: " + (left?.toString() ?: "—"))
             Text("Hechos hoy: ${st.today} · este mes: ${st.month} · gastado este mes: ${money.fmt(st.spentMonthUsd)}")
             Text(m.provider.freeInfo, style = MaterialTheme.typography.bodySmall, color = Color.Gray)
@@ -311,7 +312,7 @@ fun SettingsScreen(vm: MainViewModel) {
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
                 singleLine = true, modifier = Modifier.fillMaxWidth()
             )
-            Text("Saldo: " + (vm.balances[p]?.let { money.fmt(it) } ?: "no se pudo leer"), style = MaterialTheme.typography.bodySmall)
+            BalanceLines(vm.balances[p], money)
             OutlinedTextField(
                 value = bal,
                 onValueChange = { v -> bal = v; v.replace(",", ".").toDoubleOrNull()?.let { vm.settings.setManualBalance(p, it) } },
@@ -397,5 +398,24 @@ fun LibraryScreen(vm: MainViewModel) {
             },
             dismissButton = { TextButton(onClick = { toDelete = null }) { Text("Cancelar") } }
         )
+    }
+}
+
+@Composable
+private fun BalanceLines(b: com.jorge.videosia.net.BalanceInfo?, money: com.jorge.videosia.data.Money) {
+    val small = MaterialTheme.typography.bodySmall
+    when {
+        b == null -> Text("Saldo: consultando…", style = small)
+        b.total == null -> Text("Saldo: no se pudo leer (${b.error ?: "sin datos"}). Puedes escribirlo a mano en Ajustes.", style = small, color = Color.Gray)
+        b.paid != null && b.quest != null -> {
+            Text("Saldo total: ${money.fmt(b.total ?: 0.0)}", fontWeight = FontWeight.SemiBold)
+            Text(
+                "Pagado: ${money.fmt(b.paid)} · Misiones (gratis): ${money.fmt(b.quest)}" + if (b.questLocked) " (bloqueado)" else "",
+                style = small
+            )
+        }
+        b.keyBudget -> Text("Saldo de esta clave: ${money.fmt(b.total ?: 0.0)} (para ver pagado y misiones, dale a la clave el permiso account:usage)", style = small)
+        b.manual -> Text("Saldo (escrito a mano): ${money.fmt(b.total ?: 0.0)}", style = small)
+        else -> Text("Saldo: ${money.fmt(b.total ?: 0.0)}", style = small)
     }
 }

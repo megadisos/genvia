@@ -19,6 +19,7 @@ import com.jorge.videosia.data.Money
 import com.jorge.videosia.data.Provider
 import com.jorge.videosia.data.Settings
 import com.jorge.videosia.data.VideoModel
+import com.jorge.videosia.net.BalanceInfo
 import com.jorge.videosia.net.GenerationRequest
 import com.jorge.videosia.net.VideoClient
 import kotlinx.coroutines.Job
@@ -44,7 +45,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     val money get() = Money(currency, copPerUsd)
 
     /** Saldo leído de cada proveedor (USD). Ausente = desconocido. */
-    val balances = mutableStateMapOf<Provider, Double>()
+    val balances = mutableStateMapOf<Provider, BalanceInfo>()
     var stats by mutableStateOf(readStats())
 
     var busy by mutableStateOf(false)
@@ -109,19 +110,23 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun refreshBalances() = viewModelScope.launch {
         Provider.entries.forEach { p ->
-            val live = client.balanceUsd(p, settings.key(p))
+            val live = client.balanceInfo(p, settings.key(p))
             val manual = settings.manualBalance(p)
-            when {
-                live != null -> balances[p] = live
-                manual >= 0 -> balances[p] = manual
-                else -> balances.remove(p)
-            }
+            balances[p] = if (live.total == null && manual >= 0)
+                BalanceInfo(total = manual, paid = manual, manual = true, error = live.error) else live
         }
+    }
+
+    /** Saldo que puede usar este modelo: los "solo de pago" no aceptan el Pollen de misiones. */
+    fun usableUsd(m: VideoModel): Double? {
+        val b = balances[m.provider] ?: return null
+        if (m.freePollenOk || b.paid == null) return b.total
+        return b.paid
     }
 
     /** Cuántos videos de este modelo y duración alcanzan con el saldo conocido. */
     fun videosLeft(m: VideoModel, secs: Int): Int? {
-        val bal = balances[m.provider] ?: return null
+        val bal = usableUsd(m) ?: return null
         val cost = m.estimateUsd(secs)
         return if (cost <= 0) null else (bal / cost).toInt()
     }
