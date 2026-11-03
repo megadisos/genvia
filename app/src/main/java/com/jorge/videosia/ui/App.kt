@@ -2,13 +2,20 @@ package com.jorge.videosia.ui
 
 import android.content.Intent
 import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AddPhotoAlternate
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Share
@@ -16,7 +23,10 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -29,21 +39,22 @@ import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
 import com.jorge.videosia.data.Catalog
+import com.jorge.videosia.data.Currency
 import com.jorge.videosia.data.Gallery
 import com.jorge.videosia.data.Provider
 import com.jorge.videosia.data.VideoModel
 import java.io.File
+import java.text.DateFormat
+import java.util.Date
 import java.util.Locale
 
 private val Accent = Color(0xFF6C4CF5)
-private val FreeGreen = Color(0xFF2EB872)
-
-fun usd(v: Double): String = "$" + String.format(Locale.US, if (v < 1) "%.3f" else "%.2f", v)
+private val Green = Color(0xFF2EB872)
+private val Gold = Color(0xFFFFD54F)
 
 @Composable
 fun App(vm: MainViewModel = viewModel()) {
-    val scheme = darkColorScheme(primary = Accent, secondary = Color(0xFFFFD54F))
-    MaterialTheme(colorScheme = scheme) {
+    MaterialTheme(colorScheme = darkColorScheme(primary = Accent, secondary = Gold)) {
         var tab by remember { mutableIntStateOf(0) }
         Scaffold(
             bottomBar = {
@@ -60,16 +71,37 @@ fun App(vm: MainViewModel = viewModel()) {
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun CurrencySwitch(vm: MainViewModel) {
+    SingleChoiceSegmentedButtonRow {
+        Currency.entries.forEachIndexed { i, c ->
+            SegmentedButton(
+                selected = vm.currency == c, onClick = { vm.setCurrency(c) },
+                shape = SegmentedButtonDefaults.itemShape(i, Currency.entries.size)
+            ) { Text(c.name) }
+        }
+    }
+}
+
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun CreateScreen(vm: MainViewModel) {
     val ctx = LocalContext.current
+    val money = vm.money
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { vm.setImage(it) }
+
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
-        Text("GenVia", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
-        Text("Videos con IA para tus redes", color = Color.Gray)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("GenVia", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+                Text("Videos con IA para tus redes", color = Color.Gray)
+            }
+            CurrencySwitch(vm)
+        }
 
         OutlinedTextField(
             value = vm.prompt, onValueChange = { vm.prompt = it },
@@ -78,43 +110,68 @@ fun CreateScreen(vm: MainViewModel) {
             modifier = Modifier.fillMaxWidth(), minLines = 3, enabled = !vm.busy
         )
 
-        Text("Formato", fontWeight = FontWeight.SemiBold)
-        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            listOf("9:16" to "Vertical (TikTok, Reels)", "16:9" to "Horizontal (YouTube)", "1:1" to "Cuadrado").forEach { (v, l) ->
-                FilterChip(vm.aspect == v, { vm.aspect = v }, label = { Text(l) })
+        // ---- Imagen de referencia ----
+        val preview = vm.imagePreview
+        if (preview == null) {
+            OutlinedButton(
+                onClick = { picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
+                enabled = !vm.busy, modifier = Modifier.fillMaxWidth()
+            ) {
+                Icon(Icons.Default.AddPhotoAlternate, null); Spacer(Modifier.width(8.dp))
+                Text("Agregar imagen de referencia (opcional)")
+            }
+        } else {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Image(
+                    preview.asImageBitmap(), "Imagen de referencia",
+                    Modifier.size(84.dp).clip(RoundedCornerShape(10.dp)), contentScale = ContentScale.Crop
+                )
+                Column(Modifier.weight(1f)) {
+                    Text("Imagen de referencia", fontWeight = FontWeight.SemiBold)
+                    Text("Se usa como primer cuadro del video.", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                    if (!vm.model.imageOk) Text("${vm.model.name} no acepta imagen.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                }
+                IconButton(onClick = vm::clearImage, enabled = !vm.busy) { Icon(Icons.Default.Close, "Quitar imagen") }
             }
         }
 
+        Text("Formato", fontWeight = FontWeight.SemiBold)
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            val labels = mapOf("9:16" to "Vertical (TikTok, Reels)", "16:9" to "Horizontal (YouTube)", "1:1" to "Cuadrado")
+            vm.model.aspects.forEach { v -> FilterChip(vm.aspect == v, { vm.aspect = v }, label = { Text(labels[v] ?: v) }) }
+        }
+
         Text("Modelo de IA", fontWeight = FontWeight.SemiBold)
-        ModelGroup("Gratis", Catalog.models.filter { it.isFree }, vm)
-        ModelGroup("Chinas (pago)", Catalog.models.filter { !it.isFree && it.country == "China" }, vm)
-        ModelGroup("Otras (pago)", Catalog.models.filter { !it.isFree && it.country != "China" }, vm)
+        val needImage = vm.imageJpeg != null
+        val pol = Catalog.models.filter { it.provider == Provider.POLLINATIONS }
+        val fal = Catalog.models.filter { it.provider == Provider.FAL }
+        ModelGroup("Pollinations · chinas", pol.filter { it.country == "China" }, vm, needImage)
+        ModelGroup("Pollinations · otras", pol.filter { it.country != "China" }, vm, needImage)
+        ModelGroup("fal.ai · chinas", fal.filter { it.country == "China" }, vm, needImage)
+        ModelGroup("fal.ai · otras", fal.filter { it.country != "China" }, vm, needImage)
 
         if (vm.model.durations.size > 1) {
-            Text("Duración", fontWeight = FontWeight.SemiBold)
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("Duración del video", fontWeight = FontWeight.SemiBold)
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 vm.model.durations.forEach { s -> FilterChip(vm.seconds == s, { vm.seconds = s }, label = { Text("${s}s") }) }
             }
         }
 
-        CostCard(vm.model, vm.seconds)
+        InfoCard(vm)
 
         if (vm.busy) {
             LinearProgressIndicator(Modifier.fillMaxWidth())
             Text(vm.status)
             OutlinedButton(onClick = vm::cancel, modifier = Modifier.fillMaxWidth()) { Text("Dejar de esperar") }
-            Text(
-                "Si cancelas, el proveedor puede terminar el video y cobrarlo igual.",
-                style = MaterialTheme.typography.bodySmall, color = Color.Gray
-            )
+            Text("Si cancelas, el proveedor puede terminar el video y cobrarlo igual.", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
         } else {
             Button(onClick = vm::generate, modifier = Modifier.fillMaxWidth().height(52.dp)) {
-                Text(if (vm.model.isFree) "Generar gratis" else "Generar por ~${usd(vm.model.estimate(vm.seconds))}")
+                Text("Generar video de ${vm.seconds}s por ~${money.fmt(vm.model.estimateUsd(vm.seconds))}")
             }
-            if (vm.status.isNotBlank()) Text(vm.status, color = FreeGreen)
+            if (vm.status.isNotBlank()) Text(vm.status, color = Green)
         }
-
         vm.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+        vm.lastInfo?.let { Text(it, fontWeight = FontWeight.SemiBold) }
 
         vm.resultFile?.let { file ->
             VideoPlayer(file)
@@ -129,41 +186,69 @@ fun CreateScreen(vm: MainViewModel) {
 }
 
 @Composable
-private fun ModelGroup(title: String, models: List<VideoModel>, vm: MainViewModel) {
+private fun ModelGroup(title: String, models: List<VideoModel>, vm: MainViewModel, needImage: Boolean) {
     if (models.isEmpty()) return
+    val money = vm.money
     Text(title, style = MaterialTheme.typography.labelLarge, color = Color.Gray)
     models.forEach { m ->
         val selected = vm.model.id == m.id
+        val dim = needImage && !m.imageOk
+        val refSecs = if (selected) vm.seconds else (m.durations.firstOrNull { it >= 5 } ?: m.durations.first())
         OutlinedCard(
             modifier = Modifier.fillMaxWidth().clickable(enabled = !vm.busy) { vm.pick(m) },
             border = BorderStroke(if (selected) 2.dp else 1.dp, if (selected) Accent else Color.DarkGray)
         ) {
-            Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text(m.name, fontWeight = FontWeight.SemiBold)
-                    Text("${m.company} · ${m.country}${if (m.audio) " · con audio" else ""}", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
-                    Text(m.priceNote, style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+            Column(Modifier.padding(12.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text(m.name, fontWeight = FontWeight.SemiBold, color = if (dim) Color.Gray else Color.Unspecified)
+                        Text("${m.company} · ${m.country} · ${m.quality}", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                    }
+                    Column(horizontalAlignment = Alignment.End) {
+                        Text(money.fmt(m.usdPerSecond), color = Gold, fontWeight = FontWeight.Bold)
+                        Text("por segundo", style = MaterialTheme.typography.labelSmall, color = Color.Gray)
+                    }
                 }
+                Spacer(Modifier.height(4.dp))
                 Text(
-                    if (m.isFree) "GRATIS" else "${usd(m.usdPerSecond)}/s",
-                    color = if (m.isFree) FreeGreen else MaterialTheme.colorScheme.secondary,
-                    fontWeight = FontWeight.Bold
+                    "Duración: ${m.durationText} · 1 video por generación · video de ${refSecs}s ≈ ${money.fmt(m.estimateUsd(refSecs))}",
+                    style = MaterialTheme.typography.bodySmall
                 )
+                val left = vm.videosLeft(m, refSecs)
+                Text(
+                    if (left != null) "Con tu saldo te alcanzan ~$left videos de ${refSecs}s"
+                    else "Agrega tu clave o tu saldo en Ajustes para ver cuántos te quedan",
+                    style = MaterialTheme.typography.bodySmall, color = if (left != null) Green else Color.Gray
+                )
+                val tags = buildList {
+                    if (m.freePollenOk) add("Acepta Pollen gratis")
+                    if (m.imageOk) add("Acepta imagen")
+                    if (m.audio) add("Con audio")
+                }
+                if (tags.isNotEmpty()) Text(tags.joinToString(" · "), style = MaterialTheme.typography.labelSmall, color = Accent)
             }
         }
     }
 }
 
 @Composable
-private fun CostCard(m: VideoModel, seconds: Int) {
+private fun InfoCard(vm: MainViewModel) {
+    val m = vm.model; val money = vm.money; val st = vm.stats
+    val bal = vm.balances[m.provider]
+    val left = vm.videosLeft(m, vm.seconds)
     Card(Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(14.dp)) {
-            if (m.isFree) {
-                Text("Costo: GRATIS", color = FreeGreen, fontWeight = FontWeight.Bold)
-                Text("Usa los créditos mensuales gratis de tu cuenta de Hugging Face. Si se acaban, Hugging Face puede cobrar o pedir esperar al mes siguiente.", style = MaterialTheme.typography.bodySmall)
-            } else {
-                Text("Costo estimado: ${usd(m.estimate(seconds))} USD", fontWeight = FontWeight.Bold)
-                Text("${usd(m.usdPerSecond)} por segundo × ${seconds}s · se cobra en tu cuenta de ${m.provider.label.substringBefore(" (")}. Precio aproximado, revisado en nov. 2026.", style = MaterialTheme.typography.bodySmall)
+        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text("${m.name} en ${m.provider.label}", fontWeight = FontWeight.Bold)
+            Text("Costo estimado: ${money.fmt(m.estimateUsd(vm.seconds))} (${money.fmt(m.usdPerSecond)}/s × ${vm.seconds}s)")
+            Text("Saldo disponible: " + (bal?.let { money.fmt(it) } ?: "desconocido"))
+            Text("Videos disponibles con ese saldo: " + (left?.toString() ?: "—"))
+            Text("Hechos hoy: ${st.today} · este mes: ${st.month} · gastado este mes: ${money.fmt(st.spentMonthUsd)}")
+            Text(m.provider.freeInfo, style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+            if (vm.currency == Currency.COP) {
+                Text(
+                    "Tasa: 1 USD = ${String.format(Locale.US, "%,.0f", vm.copPerUsd)} COP. Precios aproximados, revisados en nov. 2026.",
+                    style = MaterialTheme.typography.bodySmall, color = Color.Gray
+                )
             }
         }
     }
@@ -180,38 +265,62 @@ private fun VideoPlayer(file: File) {
         }
     }
     DisposableEffect(player) { onDispose { player.release() } }
-    AndroidView(
-        factory = { PlayerView(it).apply { this.player = player } },
-        modifier = Modifier.fillMaxWidth().aspectRatio(9f / 16f)
-    )
+    AndroidView(factory = { PlayerView(it).apply { this.player = player } }, modifier = Modifier.fillMaxWidth().aspectRatio(9f / 16f))
 }
 
 @Composable
 fun SettingsScreen(vm: MainViewModel) {
     val ctx = LocalContext.current
+    val money = vm.money
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(14.dp)
+        verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         Text("Ajustes", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+
+        Text("Moneda", fontWeight = FontWeight.SemiBold)
+        CurrencySwitch(vm)
+        val updated = vm.settings.copRateUpdatedAt
+        Text(
+            "1 USD = ${String.format(Locale.US, "%,.0f", vm.copPerUsd)} COP" +
+                (if (updated > 0) " · actualizado ${DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(Date(updated))}" else " · tasa aproximada"),
+            style = MaterialTheme.typography.bodySmall, color = Color.Gray
+        )
+        TextButton(onClick = { vm.refreshRate() }) { Text("Actualizar tasa") }
+        HorizontalDivider()
+
         Text("Las claves se guardan solo en este teléfono.", color = Color.Gray)
         Provider.entries.forEach { p ->
-            var value by remember { mutableStateOf(vm.settings.key(p)) }
-            Text(p.label, fontWeight = FontWeight.SemiBold)
+            var key by remember { mutableStateOf(vm.settings.key(p)) }
+            val manual = vm.settings.manualBalance(p)
+            var bal by remember { mutableStateOf(if (manual >= 0) manual.toString() else "") }
+            Text(p.label, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            Text(p.freeInfo, style = MaterialTheme.typography.bodySmall, color = Color.Gray)
             OutlinedTextField(
-                value = value,
-                onValueChange = { value = it; vm.settings.setKey(p, it) },
-                label = { Text(p.keyHint) },
-                visualTransformation = PasswordVisualTransformation(),
+                value = key, onValueChange = { key = it; vm.settings.setKey(p, it) },
+                label = { Text(p.keyHint) }, visualTransformation = PasswordVisualTransformation(),
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
                 singleLine = true, modifier = Modifier.fillMaxWidth()
             )
-            TextButton(onClick = { ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(p.keyUrl))) }) {
-                Text("Obtener clave")
+            Text("Saldo: " + (vm.balances[p]?.let { money.fmt(it) } ?: "no se pudo leer"), style = MaterialTheme.typography.bodySmall)
+            OutlinedTextField(
+                value = bal,
+                onValueChange = { v -> bal = v; v.replace(",", ".").toDoubleOrNull()?.let { vm.settings.setManualBalance(p, it) } },
+                label = { Text("Saldo a mano en USD (si la clave no deja leerlo)") },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                singleLine = true, modifier = Modifier.fillMaxWidth()
+            )
+            Row {
+                TextButton(onClick = { ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(p.keyUrl))) }) { Text("Obtener clave") }
+                TextButton(onClick = { vm.refreshBalances() }) { Text("Consultar saldo") }
             }
+            HorizontalDivider()
         }
-        HorizontalDivider()
-        Text("Gasto estimado acumulado: ${usd(vm.spent)} USD", fontWeight = FontWeight.SemiBold)
-        OutlinedButton(onClick = vm::resetSpent) { Text("Reiniciar contador") }
+
+        val st = vm.stats
+        Text("Tu uso", fontWeight = FontWeight.SemiBold)
+        Text("Videos hoy: ${st.today} · este mes: ${st.month}")
+        Text("Gastado este mes: ${money.fmt(st.spentMonthUsd)} · total: ${money.fmt(st.spentTotalUsd)}")
+        OutlinedButton(onClick = vm::resetTotal) { Text("Reiniciar total") }
     }
 }
