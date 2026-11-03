@@ -77,7 +77,7 @@ private fun CurrencySwitch(vm: MainViewModel) {
     SingleChoiceSegmentedButtonRow {
         Currency.entries.forEachIndexed { i, c ->
             SegmentedButton(
-                selected = vm.currency == c, onClick = { vm.setCurrency(c) },
+                selected = vm.currency == c, onClick = { vm.chooseCurrency(c) },
                 shape = SegmentedButtonDefaults.itemShape(i, Currency.entries.size)
             ) { Text(c.name) }
         }

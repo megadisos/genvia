@@ -90,7 +90,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun clearImage() { imageJpeg = null; imagePreview = null }
 
-    fun setCurrency(c: Currency) { currency = c; settings.currency = c }
+    fun chooseCurrency(c: Currency) { currency = c; settings.currency = c }
 
     fun refreshRate() = viewModelScope.launch {
         client.copPerUsd()?.let { settings.copPerUsd = it; copPerUsd = it }
