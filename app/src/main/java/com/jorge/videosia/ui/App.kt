@@ -337,6 +337,15 @@ fun SettingsScreen(vm: MainViewModel) {
 @Composable
 fun LibraryScreen(vm: MainViewModel) {
     val ctx = LocalContext.current
+    // Pide permiso para leer videos: así aparecen también los de versiones anteriores de la app.
+    val readPerm = if (android.os.Build.VERSION.SDK_INT >= 33) android.Manifest.permission.READ_MEDIA_VIDEO
+        else android.Manifest.permission.READ_EXTERNAL_STORAGE
+    val permLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { vm.refreshLibrary() }
+    LaunchedEffect(Unit) {
+        if (android.os.Build.VERSION.SDK_INT >= 29 &&
+            androidx.core.content.ContextCompat.checkSelfPermission(ctx, readPerm) != android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) permLauncher.launch(readPerm)
+    }
     var playing by remember { mutableStateOf<Uri?>(null) }
     var toDelete by remember { mutableStateOf<SavedVideo?>(null) }
     val groups = vm.library.groupBy { it.folder }.toSortedMap(String.CASE_INSENSITIVE_ORDER)

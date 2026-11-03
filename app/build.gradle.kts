@@ -12,15 +12,29 @@ android {
         applicationId = "com.jorge.videosia"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        // Cada compilación de GitHub sube el número, así Android lo instala como actualización.
+        versionCode = (System.getenv("GITHUB_RUN_NUMBER") ?: "1").toInt()
+        versionName = "0.2.${System.getenv("GITHUB_RUN_NUMBER") ?: "0"}"
+    }
+
+    signingConfigs {
+        // Llave FIJA guardada en los "secrets" del repositorio de GitHub (nunca en el código).
+        // Así todas las versiones se firman igual y se actualizan encima sin desinstalar.
+        val ks = System.getenv("GENVIA_KEYSTORE_PATH")
+        if (ks != null && file(ks).exists()) {
+            create("genvia") {
+                storeFile = file(ks)
+                storePassword = System.getenv("GENVIA_KEYSTORE_PASSWORD")
+                keyAlias = "genvia"
+                keyPassword = System.getenv("GENVIA_KEYSTORE_PASSWORD")
+            }
+        }
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
-            // Firmado con la clave debug para poder instalarlo directamente.
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.findByName("genvia") ?: signingConfigs.getByName("debug")
         }
     }
     compileOptions {
