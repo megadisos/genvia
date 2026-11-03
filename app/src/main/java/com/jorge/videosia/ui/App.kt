@@ -277,7 +277,7 @@ private fun InfoCard(vm: MainViewModel) {
 }
 
 @Composable
-private fun VideoPlayer(uri: Uri) {
+private fun VideoPlayer(uri: Uri, modifier: Modifier = Modifier.fillMaxWidth().aspectRatio(9f / 16f)) {
     val ctx = LocalContext.current
     val player = remember(uri) {
         ExoPlayer.Builder(ctx).build().apply {
@@ -287,7 +287,13 @@ private fun VideoPlayer(uri: Uri) {
         }
     }
     DisposableEffect(player) { onDispose { player.release() } }
-    AndroidView(factory = { PlayerView(it).apply { this.player = player } }, modifier = Modifier.fillMaxWidth().aspectRatio(9f / 16f))
+    // update = cada vez que cambia el video, la vista se conecta al reproductor nuevo
+    // (antes se quedaba con el primero, ya liberado, y se veía mal).
+    AndroidView(
+        factory = { PlayerView(it) },
+        update = { it.player = player },
+        modifier = modifier
+    )
 }
 
 @Composable
@@ -365,7 +371,7 @@ fun LibraryScreen(vm: MainViewModel) {
             androidx.core.content.ContextCompat.checkSelfPermission(ctx, readPerm) != android.content.pm.PackageManager.PERMISSION_GRANTED
         ) permLauncher.launch(readPerm)
     }
-    var playing by remember { mutableStateOf<Uri?>(null) }
+    var playing by remember { mutableStateOf<SavedVideo?>(null) }
     var toDelete by remember { mutableStateOf<SavedVideo?>(null) }
     val groups = vm.library.groupBy { it.folder }.toSortedMap(String.CASE_INSENSITIVE_ORDER)
 
@@ -379,8 +385,6 @@ fun LibraryScreen(vm: MainViewModel) {
             style = MaterialTheme.typography.bodySmall, color = Color.Gray
         )
         if (groups.isEmpty()) Text("Todavía no has generado videos.", color = Color.Gray)
-
-        playing?.let { VideoPlayer(it) }
 
         groups.forEach { (folder, videos) ->
             Spacer(Modifier.height(6.dp))
@@ -397,10 +401,32 @@ fun LibraryScreen(vm: MainViewModel) {
                                 style = MaterialTheme.typography.bodySmall, color = Color.Gray
                             )
                         }
-                        IconButton(onClick = { playing = v.uri }) { Icon(Icons.Default.PlayArrow, "Ver") }
+                        IconButton(onClick = { playing = v }) { Icon(Icons.Default.PlayArrow, "Ver") }
                         IconButton(onClick = { Gallery.share(ctx, v.uri) }) { Icon(Icons.Default.Share, "Compartir") }
                         IconButton(onClick = { toDelete = v }) { Icon(Icons.Default.Delete, "Borrar") }
                     }
+                }
+            }
+        }
+    }
+
+    playing?.let { v ->
+        androidx.compose.ui.window.Dialog(
+            onDismissRequest = { playing = null },
+            properties = androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false)
+        ) {
+            Surface(Modifier.fillMaxSize(), color = Color.Black) {
+                Column(Modifier.fillMaxSize()) {
+                    Row(Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f).padding(start = 8.dp)) {
+                            Text(v.folder, color = Color.White, fontWeight = FontWeight.SemiBold)
+                            Text(v.name, color = Color.Gray, style = MaterialTheme.typography.bodySmall)
+                        }
+                        IconButton(onClick = { Gallery.share(ctx, v.uri) }) { Icon(Icons.Default.Share, "Compartir", tint = Color.White) }
+                        IconButton(onClick = { playing = null }) { Icon(Icons.Default.Close, "Cerrar", tint = Color.White) }
+                    }
+                    // key: un reproductor nuevo por cada video
+                    key(v.uri) { VideoPlayer(v.uri, Modifier.fillMaxWidth().weight(1f)) }
                 }
             }
         }
@@ -412,7 +438,7 @@ fun LibraryScreen(vm: MainViewModel) {
             title = { Text("¿Borrar video?") },
             text = { Text("Se borrará ${v.name} de ${v.folder}. No se puede deshacer.") },
             confirmButton = {
-                TextButton(onClick = { if (playing == v.uri) playing = null; vm.deleteVideo(v); toDelete = null }) { Text("Borrar") }
+                TextButton(onClick = { if (playing?.uri == v.uri) playing = null; vm.deleteVideo(v); toDelete = null }) { Text("Borrar") }
             },
             dismissButton = { TextButton(onClick = { toDelete = null }) { Text("Cancelar") } }
         )
