@@ -153,12 +153,23 @@ fun CreateScreen(vm: MainViewModel) {
 
         Text("Modelo de IA", fontWeight = FontWeight.SemiBold)
         val needImage = vm.imageJpeg != null
-        val pol = Catalog.models.filter { it.provider == Provider.POLLINATIONS }
-        val fal = Catalog.models.filter { it.provider == Provider.FAL }
-        ModelGroup("Pollinations · chinas", pol.filter { it.country == "China" }, vm, needImage)
-        ModelGroup("Pollinations · otras", pol.filter { it.country != "China" }, vm, needImage)
-        ModelGroup("fal.ai · chinas", fal.filter { it.country == "China" }, vm, needImage)
-        ModelGroup("fal.ai · otras", fal.filter { it.country != "China" }, vm, needImage)
+        var order by remember { mutableIntStateOf(0) }
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf("Mejor a peor", "Por uso", "Por proveedor", "Más barato").forEachIndexed { i, l ->
+                FilterChip(order == i, { order = i }, label = { Text(l) })
+            }
+        }
+        val all = Catalog.models
+        when (order) {
+            0 -> ModelGroup("De mejor a peor calidad", all.sortedWith(compareBy({ it.rank }, { it.usdPerSecond })), vm, needImage)
+            1 -> com.jorge.videosia.data.UseCase.entries.forEach { u ->
+                ModelGroup(u.label, all.filter { it.useCase == u }.sortedBy { it.rank }, vm, needImage)
+            }
+            2 -> Provider.entries.forEach { p ->
+                ModelGroup(p.label, all.filter { it.provider == p }.sortedBy { it.rank }, vm, needImage)
+            }
+            else -> ModelGroup("Del más barato al más caro (por segundo)", all.sortedBy { it.usdPerSecond }, vm, needImage)
+        }
 
         if (vm.model.durations.size > 1) {
             Text("Duración del video", fontWeight = FontWeight.SemiBold)
@@ -210,8 +221,8 @@ private fun ModelGroup(title: String, models: List<VideoModel>, vm: MainViewMode
             Column(Modifier.padding(12.dp)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
-                        Text(m.name, fontWeight = FontWeight.SemiBold, color = if (dim) Color.Gray else Color.Unspecified)
-                        Text("${m.company} · ${m.country} · ${m.quality}", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                        Text("#${m.rank} ${m.name}", fontWeight = FontWeight.SemiBold, color = if (dim) Color.Gray else Color.Unspecified)
+                        Text("${m.company} · ${m.country} · ${m.provider.label} · ${m.quality}", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
                     }
                     Column(horizontalAlignment = Alignment.End) {
                         Text(money.fmt(m.usdPerSecond), color = Gold, fontWeight = FontWeight.Bold)
@@ -219,6 +230,7 @@ private fun ModelGroup(title: String, models: List<VideoModel>, vm: MainViewMode
                     }
                 }
                 Spacer(Modifier.height(4.dp))
+                if (m.bestFor.isNotBlank()) Text("Ideal para: ${m.bestFor}", style = MaterialTheme.typography.bodySmall, color = Gold)
                 Text(
                     "Duración: ${m.durationText} · 1 video por generación · video de ${refSecs}s ≈ ${money.fmt(m.estimateUsd(refSecs))}",
                     style = MaterialTheme.typography.bodySmall

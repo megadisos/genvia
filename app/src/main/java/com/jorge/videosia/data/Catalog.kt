@@ -24,6 +24,17 @@ enum class Provider(
     ),
 }
 
+/** Para qué tipo de video conviene cada IA. */
+enum class UseCase(val label: String) {
+    CINE("Calidad cine y anuncios premium"),
+    PERSONAS("Personas, acción y fotos de rostro"),
+    DIALOGO("Con diálogo y sonido realista"),
+    PRODUCTO("Productos y publicidad para redes"),
+    PRUEBAS("Pruebas baratas y borradores"),
+}
+
+data class ModelInfo(val rank: Int, val useCase: UseCase, val bestFor: String)
+
 /** Cómo se envía la duración a fal.ai. */
 enum class DurationStyle { NONE, STRING, SECONDS_SUFFIX, INT }
 
@@ -50,6 +61,12 @@ data class VideoModel(
     /** Endpoint de fal.ai para imagen a video. */
     val imageEndpoint: String? = null,
 ) {
+    /** Puesto en el ranking de calidad (1 = mejor). */
+    val rank: Int get() = Catalog.info[id]?.rank ?: 99
+    /** Para qué conviene usarla. */
+    val bestFor: String get() = Catalog.info[id]?.bestFor ?: ""
+    /** Categoría de uso. */
+    val useCase: UseCase get() = Catalog.info[id]?.useCase ?: UseCase.PRUEBAS
     fun estimateUsd(seconds: Int): Double = usdPerSecond * seconds
     val durationText: String
         get() = if (durations.size == 1) "${durations[0]} s" else "${durations.first()} a ${durations.last()} s"
@@ -60,6 +77,28 @@ data class VideoModel(
  * Con Pollinations la app además mide el costo REAL comparando el saldo antes y después.
  */
 object Catalog {
+    /**
+     * Ranking de calidad (1 = mejor) y para qué sirve cada una. Es una guía según comparativas
+     * públicas de nov. 2026; el mismo modelo en otro proveedor queda en el mismo puesto.
+     */
+    val info: Map<String, ModelInfo> = mapOf(
+        "fal-kling-o3" to ModelInfo(1, UseCase.CINE, "Anuncios con calidad de cine en 4K y movimiento humano muy realista."),
+        "fal-seed25" to ModelInfo(2, UseCase.CINE, "Historias con varias tomas; sigue el prompt al pie de la letra."),
+        "fal-veo-fast" to ModelInfo(3, UseCase.DIALOGO, "Personas hablando, diálogos y sonido ambiente realista."),
+        "pol-veo" to ModelInfo(3, UseCase.DIALOGO, "Personas hablando, diálogos y sonido ambiente realista."),
+        "pol-kling3" to ModelInfo(4, UseCase.PERSONAS, "Acción y personas; conserva bien la cara de una foto."),
+        "pol-omni" to ModelInfo(5, UseCase.DIALOGO, "Explicativos y presentaciones con voz; buena calidad por su precio."),
+        "pol-h3max" to ModelInfo(6, UseCase.PERSONAS, "Movimiento dinámico, baile y efectos; videos de hasta 15 s."),
+        "fal-h3max" to ModelInfo(6, UseCase.PERSONAS, "Movimiento dinámico, baile y efectos."),
+        "pol-wan30" to ModelInfo(7, UseCase.PRODUCTO, "Productos y publicidad con audio; respeta tomas por segundos."),
+        "fal-wan30" to ModelInfo(7, UseCase.PRODUCTO, "Productos y publicidad; hasta 10 s."),
+        "pol-seed20fast" to ModelInfo(8, UseCase.PRODUCTO, "Videos cortos de producto con audio, rápidos de generar."),
+        "pol-happyhorse" to ModelInfo(9, UseCase.PRODUCTO, "Escenas creativas y estilizadas, personajes y mascotas."),
+        "fal-ltx25" to ModelInfo(10, UseCase.PRUEBAS, "Rápido y barato en 720p; paisajes y fondos."),
+        "pol-seed20mini" to ModelInfo(11, UseCase.PRUEBAS, "Borradores baratos con audio para probar ideas."),
+        "pol-wan22fast" to ModelInfo(12, UseCase.PRUEBAS, "El más barato: prueba tus prompts antes de gastar; usa el Pollen gratis."),
+    )
+
     private val P = Provider.POLLINATIONS
     private val F = Provider.FAL
 
