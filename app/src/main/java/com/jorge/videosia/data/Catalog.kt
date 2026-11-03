@@ -12,8 +12,9 @@ enum class Provider(
         "Pollinations",
         "Clave secreta sk_... (con permiso de saldo \"account:usage\")",
         "https://enter.pollinations.ai/keys",
-        "Regala Pollen gratis una sola vez al completar misiones (unos 3 Pollen ≈ 3 USD). " +
-            "Desde julio de 2026 ya no recarga cada día. Después se paga: 1 Pollen ≈ 1 USD.",
+        "Regala un poco de Pollen gratis al completar misiones (por ejemplo 0,25), que solo sirve en " +
+            "modelos que no son solo de pago. Ya no recarga cada día. 1 Pollen rinde como 1 USD en videos " +
+            "y comprarlo cuesta entre 1,04 y 1,19 USD según el paquete.",
     ),
     FAL(
         "fal.ai",

@@ -35,8 +35,9 @@ Precios revisados en noviembre de 2026; cambian seguido y se editan en
 
 ## Lo gratis, sin letra pequeña
 
-- **Pollinations**: regala Pollen una sola vez al completar misiones (unos 3 Pollen ≈ 3 USD).
-  Ya no recarga cada día. Con Wan 2.2 Fast eso da para muchos videos cortos.
+- **Pollinations**: regala un poco de Pollen al completar misiones (por ejemplo 0,25), solo para
+  modelos que no son "solo de pago". Ya no recarga cada día. Con Wan 2.2 Fast un video de 5 s cuesta
+  unos 0,075 Pollen. Comprar Pollen cuesta entre 1,04 y 1,19 USD por Pollen según el paquete.
 - **fal.ai**: no tiene plan gratis.
 - Kling, Hailuo y Dreamina tienen créditos diarios gratis solo en sus apps, no por API.
 
