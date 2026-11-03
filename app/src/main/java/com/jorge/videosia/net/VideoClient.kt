@@ -19,6 +19,11 @@ import java.util.concurrent.TimeUnit
 
 class ApiException(message: String) : Exception(message)
 
+private const val CONTENT_POLICY =
+    "El filtro de contenido rechazó el prompt o la imagen. Suele pasar con violencia, armas o fotos de personas " +
+        "reales en escenas de pelea. Suaviza el prompt (por ejemplo, juego o aventura sin golpes) o prueba otro modelo. " +
+        "Los videos rechazados normalmente no se cobran."
+
 /** Saldo en USD (1 Pollen ≈ 1 USD). */
 data class BalanceInfo(
     val total: Double? = null,
@@ -156,8 +161,10 @@ class VideoClient {
                 val o = JSONObject(st.body)
                 when (o.optString("status")) {
                     "succeeded" -> break
-                    "failed", "error", "cancelled" ->
-                        throw ApiException("Falló: " + (o.optJSONObject("error")?.optString("message") ?: o.optString("error", st.body.take(300))))
+                    "failed", "error", "cancelled" -> {
+                        val msg = o.optJSONObject("error")?.optString("message") ?: o.optString("error", st.body)
+                        throw ApiException(if (isContentPolicy(msg)) CONTENT_POLICY else "Falló: ${msg.take(300)}")
+                    }
                     else -> onStatus("Generando video… (${waited}s)")
                 }
                 if (waited > 20 * 60) throw ApiException("Tardó más de 20 minutos. Inténtalo de nuevo.")
@@ -251,7 +258,10 @@ class VideoClient {
         }
     }
 
-    private fun friendlyError(code: Int, body: String): String = when (code) {
+    private fun isContentPolicy(text: String) =
+        text.contains("content_policy", true) || text.contains("flagged", true) || text.contains("moderation", true)
+
+    private fun friendlyError(code: Int, body: String): String = if (isContentPolicy(body)) CONTENT_POLICY else when (code) {
         401, 403 -> "Clave inválida o sin permisos ($code). ${body.take(200)}"
         402 -> "Sin saldo suficiente ($code). Recarga en el proveedor."
         404 -> "El modelo no existe o cambió de nombre ($code)."
