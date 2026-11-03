@@ -1,30 +1,30 @@
 package com.jorge.videosia.data
 
 /** Quién ejecuta el modelo. */
-enum class Provider(val label: String, val keyHint: String, val keyUrl: String) {
-    HUGGINGFACE(
-        "Hugging Face (gratis con créditos mensuales)",
-        "Token hf_... con permiso \"Inference Providers\"",
-        "https://huggingface.co/settings/tokens"
+enum class Provider(
+    val label: String,
+    val keyHint: String,
+    val keyUrl: String,
+    /** Qué hay gratis en este proveedor, explicado para el usuario. */
+    val freeInfo: String,
+) {
+    POLLINATIONS(
+        "Pollinations",
+        "Clave secreta sk_... (con permiso de saldo \"account:usage\")",
+        "https://enter.pollinations.ai/keys",
+        "Regala Pollen gratis una sola vez al completar misiones (unos 3 Pollen ≈ 3 USD). " +
+            "Desde julio de 2026 ya no recarga cada día. Después se paga: 1 Pollen ≈ 1 USD.",
     ),
     FAL(
-        "fal.ai (pago por segundo)",
-        "API key de fal.ai",
-        "https://fal.ai/dashboard/keys"
+        "fal.ai",
+        "API key de fal.ai (con permiso de lectura de facturación)",
+        "https://fal.ai/dashboard/keys",
+        "No tiene plan gratis. Recargas saldo y cada video se descuenta por segundo.",
     ),
 }
 
-/** Cómo se envía la duración al modelo. */
-enum class DurationStyle {
-    /** No se envía; el modelo usa su duración por defecto. */
-    NONE,
-    /** "5" (string) */
-    STRING,
-    /** "8s" */
-    SECONDS_SUFFIX,
-    /** 5 (número) */
-    INT,
-}
+/** Cómo se envía la duración a fal.ai. */
+enum class DurationStyle { NONE, STRING, SECONDS_SUFFIX, INT }
 
 data class VideoModel(
     val id: String,
@@ -32,93 +32,75 @@ data class VideoModel(
     val company: String,
     val country: String,
     val provider: Provider,
-    /** Endpoint en fal.ai, o id de modelo en Hugging Face. */
+    /** Endpoint en fal.ai o nombre de modelo en Pollinations. */
     val endpoint: String,
-    /** USD por segundo de video. 0 = gratis (consume créditos gratis). */
+    /** USD por segundo de video (estimado). */
     val usdPerSecond: Double,
-    val priceNote: String,
+    val quality: String,
+    /** Duraciones posibles en segundos. */
     val durations: List<Int>,
-    val durationStyle: DurationStyle,
-    val sendsAspectRatio: Boolean = true,
+    val durationStyle: DurationStyle = DurationStyle.INT,
+    val aspects: List<String> = listOf("9:16", "16:9", "1:1"),
     val audio: Boolean = false,
+    /** Se puede pagar con el Pollen gratis de misiones (si es false, solo saldo pagado). */
+    val freePollenOk: Boolean = false,
+    /** Acepta imagen de referencia (Pollinations: sí; fal.ai: si tiene endpoint de imagen a video). */
+    val imageOk: Boolean = provider == Provider.POLLINATIONS,
+    /** Endpoint de fal.ai para imagen a video. */
+    val imageEndpoint: String? = null,
 ) {
-    val isFree get() = usdPerSecond == 0.0
-    fun estimate(seconds: Int): Double = usdPerSecond * seconds
+    fun estimateUsd(seconds: Int): Double = usdPerSecond * seconds
+    val durationText: String
+        get() = if (durations.size == 1) "${durations[0]} s" else "${durations.first()} a ${durations.last()} s"
 }
 
 /**
- * Catálogo de modelos. Precios de la página oficial de fal.ai y de los
- * fabricantes, revisados en noviembre de 2026. Son aproximados: la app
- * siempre muestra el costo estimado ANTES de generar.
+ * Catálogo. Precios aproximados (fal.ai y fabricantes, revisados nov. 2026).
+ * Con Pollinations la app además mide el costo REAL comparando el saldo antes y después.
  */
 object Catalog {
+    private val P = Provider.POLLINATIONS
+    private val F = Provider.FAL
+
     val models = listOf(
-        // ---------- GRATIS (créditos mensuales de Hugging Face) ----------
-        VideoModel(
-            id = "hf-wan22", name = "Wan 2.2 5B", company = "Alibaba", country = "China",
-            provider = Provider.HUGGINGFACE, endpoint = "Wan-AI/Wan2.2-TI2V-5B",
-            usdPerSecond = 0.0, priceNote = "Gratis con los créditos mensuales de Hugging Face",
-            durations = listOf(5), durationStyle = DurationStyle.NONE, sendsAspectRatio = false,
-        ),
-        VideoModel(
-            id = "hf-ltx", name = "LTX-Video 13B (rápido)", company = "Lightricks", country = "Israel",
-            provider = Provider.HUGGINGFACE, endpoint = "Lightricks/LTX-Video-0.9.8-13B-distilled",
-            usdPerSecond = 0.0, priceNote = "Gratis con los créditos mensuales de Hugging Face",
-            durations = listOf(5), durationStyle = DurationStyle.NONE, sendsAspectRatio = false,
-        ),
+        // ---------- Pollinations: una sola clave, acepta el Pollen gratis ----------
+        VideoModel("pol-wan22fast", "Wan 2.2 Fast", "Alibaba", "China", P, "alibaba/wan-2.2-fast",
+            0.015, "480p, el más barato", (2..15).toList(), freePollenOk = true),
+        VideoModel("pol-wan30", "Wan 3.0", "Alibaba", "China", P, "alibaba/wan-3.0",
+            0.10, "720p con audio", listOf(5), audio = true),
+        VideoModel("pol-kling3", "Kling 3.0 Standard", "Kuaishou", "China", P, "kwaivgi/kling-v3.0-std",
+            0.084, "720p", listOf(5, 10)),
+        VideoModel("pol-seed20mini", "Seedance 2.0 Mini", "ByteDance", "China", P, "bytedance/seedance-2.0-mini",
+            0.07, "480p con audio", (4..10).toList(), audio = true),
+        VideoModel("pol-seed20fast", "Seedance 2.0 Fast", "ByteDance", "China", P, "bytedance/seedance-2.0-fast",
+            0.12, "720p con audio", listOf(4, 5), audio = true),
+        VideoModel("pol-h3max", "Hailuo H3 Max", "MiniMax", "China", P, "minimax/minimax-h3-max",
+            0.08, "768p con audio", listOf(5, 10, 15), audio = true),
+        VideoModel("pol-happyhorse", "Happy Horse 1.1", "Alibaba", "China", P, "alibaba/happyhorse-1.1",
+            0.14, "720p", listOf(5)),
+        VideoModel("pol-omni", "Gemini Omni Flash 1.1", "Google", "EE. UU.", P, "google/gemini-omni-1.1-flash",
+            0.10, "720p con audio", (3..10).toList(), audio = true),
+        VideoModel("pol-veo", "Veo 3.1 Fast", "Google", "EE. UU.", P, "google/veo-3.1-fast",
+            0.15, "720p con audio", listOf(4, 6, 8), audio = true),
 
-        // ---------- CHINAS (pago, vía fal.ai) ----------
-        VideoModel(
-            id = "fal-wan30", name = "Wan 3.0", company = "Alibaba", country = "China",
-            provider = Provider.FAL, endpoint = "alibaba/wan-3.0/text-to-video",
-            usdPerSecond = 0.10, priceNote = "720p · 480p cuesta $0.05/s",
-            durations = listOf(5, 10), durationStyle = DurationStyle.INT,
-        ),
-        VideoModel(
-            id = "fal-minimax-h3max", name = "Hailuo H3 Max", company = "MiniMax", country = "China",
-            provider = Provider.FAL, endpoint = "minimax/h3-max/text-to-video",
-            usdPerSecond = 0.08, priceNote = "768p · 480p cuesta $0.05/s",
-            durations = listOf(6), durationStyle = DurationStyle.NONE,
-        ),
-        VideoModel(
-            id = "fal-kling-o3", name = "Kling O3 4K", company = "Kuaishou", country = "China",
-            provider = Provider.FAL, endpoint = "fal-ai/kling-video/o3/4k/text-to-video",
-            usdPerSecond = 0.42, priceNote = "4K, con o sin audio",
-            durations = listOf(5, 10), durationStyle = DurationStyle.STRING, audio = true,
-        ),
-        VideoModel(
-            id = "fal-seedance25", name = "Seedance 2.5", company = "ByteDance", country = "China",
-            provider = Provider.FAL, endpoint = "bytedance/seedance-2.5/text-to-video",
-            usdPerSecond = 0.473, priceNote = "720p · 480p cuesta ~$0.22/s",
-            durations = listOf(5, 10), durationStyle = DurationStyle.STRING,
-        ),
-        VideoModel(
-            id = "fal-happyhorse", name = "Happy Horse 1.1", company = "Alibaba", country = "China",
-            provider = Provider.FAL, endpoint = "alibaba/happy-horse/v1.1/text-to-video",
-            usdPerSecond = 0.14, priceNote = "720p",
-            durations = listOf(5), durationStyle = DurationStyle.NONE,
-        ),
-
-        // ---------- OTRAS (pago, vía fal.ai) ----------
-        VideoModel(
-            id = "fal-omni-flash", name = "Gemini Omni Flash 1.1", company = "Google", country = "EE. UU.",
-            provider = Provider.FAL, endpoint = "google/gemini-omni-flash/v1.1/text-to-video",
-            usdPerSecond = 0.10, priceNote = "720p · 360p cuesta $0.03/s",
-            durations = listOf(5), durationStyle = DurationStyle.NONE,
-        ),
-        VideoModel(
-            id = "fal-veo31-fast", name = "Veo 3.1 Fast (con audio)", company = "Google", country = "EE. UU.",
-            provider = Provider.FAL, endpoint = "fal-ai/veo3.1/fast",
-            usdPerSecond = 0.15, priceNote = "720p/1080p con audio",
-            durations = listOf(4, 6, 8), durationStyle = DurationStyle.SECONDS_SUFFIX, audio = true,
-        ),
-        VideoModel(
-            id = "fal-ltx25-fast", name = "LTX-2.5 Fast", company = "Lightricks", country = "Israel",
-            provider = Provider.FAL, endpoint = "lightricks/ltx-2.5/text-to-video/fast",
-            usdPerSecond = 0.09, priceNote = "720p",
-            durations = listOf(6, 8, 10), durationStyle = DurationStyle.INT,
-        ),
+        // ---------- fal.ai: pago por segundo ----------
+        VideoModel("fal-wan30", "Wan 3.0", "Alibaba", "China", F, "alibaba/wan-3.0/text-to-video",
+            0.10, "720p", listOf(5, 10),
+            imageOk = true, imageEndpoint = "alibaba/wan-3.0/image-to-video"),
+        VideoModel("fal-h3max", "Hailuo H3 Max", "MiniMax", "China", F, "minimax/h3-max/text-to-video",
+            0.08, "768p", listOf(6), DurationStyle.NONE,
+            imageOk = true, imageEndpoint = "minimax/h3-max/image-to-video"),
+        VideoModel("fal-kling-o3", "Kling O3 4K", "Kuaishou", "China", F, "fal-ai/kling-video/o3/4k/text-to-video",
+            0.42, "4K con audio", listOf(5, 10), DurationStyle.STRING, audio = true,
+            imageOk = true, imageEndpoint = "fal-ai/kling-video/o3/4k/image-to-video"),
+        VideoModel("fal-seed25", "Seedance 2.5", "ByteDance", "China", F, "bytedance/seedance-2.5/text-to-video",
+            0.473, "720p", listOf(5, 10), DurationStyle.STRING,
+            imageOk = true, imageEndpoint = "bytedance/seedance-2.5/image-to-video"),
+        VideoModel("fal-veo-fast", "Veo 3.1 Fast", "Google", "EE. UU.", F, "fal-ai/veo3.1/fast",
+            0.15, "720p/1080p con audio", listOf(4, 6, 8), DurationStyle.SECONDS_SUFFIX, audio = true,
+            imageOk = true, imageEndpoint = "fal-ai/veo3.1/fast/image-to-video"),
+        VideoModel("fal-ltx25", "LTX-2.5 Fast", "Lightricks", "Israel", F, "lightricks/ltx-2.5/text-to-video/fast",
+            0.09, "720p", listOf(6, 8, 10),
+            imageOk = true, imageEndpoint = "lightricks/ltx-2.5/image-to-video/fast"),
     )
-
-    fun byId(id: String) = models.firstOrNull { it.id == id }
 }
